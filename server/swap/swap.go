@@ -1113,13 +1113,13 @@ func (s *Swapper) checkMatches(checkMatch func(match *matchTracker) *fail) {
 	for _, match := range s.matches {
 		fail := checkMatch(match)
 		if fail != nil {
-			failures = append(failures, *fail) // to process after map delete
+			failures = append(failures, *fail)
 		}
 	}
 	s.matchMtx.Unlock()
 
 	// Record failed matches in the DB and auth mgr, unlock coins, and send
-	// revoke_match messsages.
+	// revoke_match messages.
 	for _, fail := range failures {
 		s.failMatch(fail.match, fail.fault)
 	}
