@@ -1044,15 +1044,13 @@ func (s *Swapper) checkInactionEventBased() {
 		return
 	}
 
-	var failures []fail
-
 	// Do time.Since(event) with the same now time for each match.
 	now := time.Now()
 	tooOld := func(evt time.Time) bool {
 		return now.Sub(evt) >= s.bTimeout
 	}
 
-	checkMatch := func(match *matchTracker) {
+	checkMatch := func(match *matchTracker) (result *fail) {
 		// Lock entire matchTracker so the following is atomic with respect to
 		// Status.
 		match.mtx.RLock()
@@ -1062,7 +1060,7 @@ func (s *Swapper) checkInactionEventBased() {
 
 		deleteMatch := func(fault bool) {
 			s.deleteMatch(match)
-			failures = append(failures, fail{match, fault}) // to process after map delete
+			result = &fail{match, fault}
 		}
 
 		switch match.Status {
@@ -1100,12 +1098,23 @@ func (s *Swapper) checkInactionEventBased() {
 				deleteMatch(true)
 			}
 		}
+
+		return
 	}
+
+	s.checkMatches(checkMatch)
+}
+
+func (s *Swapper) checkMatches(checkMatch func(match *matchTracker) *fail) {
+	var failures []fail
 
 	// Check and delete atomically
 	s.matchMtx.Lock()
 	for _, match := range s.matches {
-		checkMatch(match)
+		fail := checkMatch(match)
+		if fail != nil {
+			failures = append(failures, *fail) // to process after map delete
+		}
 	}
 	s.matchMtx.Unlock()
 
@@ -1130,7 +1139,6 @@ func (s *Swapper) checkInactionBlockBased(assetID uint32) {
 		return
 	}
 
-	var failures []fail
 	// Do time.Since(event) with the same now time for each match.
 	now := time.Now()
 	tooOld := func(evt time.Time) bool {
@@ -1138,7 +1146,7 @@ func (s *Swapper) checkInactionBlockBased(assetID uint32) {
 		return !evt.IsZero() && now.Sub(evt) >= s.bTimeout
 	}
 
-	checkMatch := func(match *matchTracker) {
+	checkMatch := func(match *matchTracker) (result *fail) {
 		if match.makerStatus.swapAsset != assetID && match.takerStatus.swapAsset != assetID {
 			return
 		}
@@ -1154,7 +1162,7 @@ func (s *Swapper) checkInactionBlockBased(assetID uint32) {
 		deleteMatch := func() {
 			// Fail the match, and assign fault if lock times are not passed.
 			s.deleteMatch(match)
-			failures = append(failures, fail{match, !match.expiredBy(now)})
+			result = &fail{match, !match.expiredBy(now)}
 		}
 
 		switch match.Status {
@@ -1167,20 +1175,11 @@ func (s *Swapper) checkInactionBlockBased(assetID uint32) {
 				deleteMatch()
 			}
 		}
+
+		return
 	}
 
-	// Check and delete atomically.
-	s.matchMtx.Lock()
-	for _, match := range s.matches {
-		checkMatch(match)
-	}
-	s.matchMtx.Unlock()
-
-	// Record failed matches in the DB and auth mgr, unlock coins, and send
-	// revoke_match messsages.
-	for _, fail := range failures {
-		s.failMatch(fail.match, fail.fault)
-	}
+	s.checkMatches(checkMatch)
 }
 
 // respondError sends an rpcError to a user.
